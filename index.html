@@ -295,6 +295,23 @@ function App() {
 function Dashboard({ currentUser, users, tasks, logout }) {
   const [activeTab, setActiveTab] = useState('All tasks');
   const [deleteModalContent, setDeleteModalContent] = useState(null); 
+  const [editingTaskId, setEditingTaskId] = useState(null);
+
+  const handleEditClick = (task) => {
+    setEditingTaskId(task.id);
+    setTName(task.name);
+    setTDesc(task.desc);
+    setTAssignee(task.assignedToId);
+    setTDate(task.date);
+    setTTime(task.time || '');
+    setTPriority(task.priority || 'Medium');
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  const cancelEdit = () => {
+    setEditingTaskId(null);
+    setTName(''); setTDesc(''); setTAssignee(''); setTDate(''); setTTime(''); setTPriority('Medium');
+  };
 
   const [tName, setTName] = useState('');
   const [tDesc, setTDesc] = useState('');
@@ -328,24 +345,38 @@ function Dashboard({ currentUser, users, tasks, logout }) {
     setFormError('');
     
     let aUser = users.find(u => u.id === tAssignee);
-    const newTask = {
-      name: tName,
-      desc: tDesc,
-      assignedById: currentUser.id,
-      assignedByName: currentUser.name,
-      assignedToId: aUser.id,
-      assignedToName: aUser.name,
-      assignedByLevel: currentUser.level,
-      assignedToLevel: aUser.level,
-      date: tDate,
-      time: tTime,
-      priority: tPriority,
-      status: 'pending', 
-      createdAt: firebase.firestore.FieldValue.serverTimestamp(),
-      deletedBy: null
-    };
-
-    await db.collection('dt_tasks').add(newTask);
+    
+    if (editingTaskId) {
+      await db.collection('dt_tasks').doc(editingTaskId).update({
+        name: tName,
+        desc: tDesc,
+        assignedToId: aUser.id,
+        assignedToName: aUser.name,
+        assignedToLevel: aUser.level,
+        date: tDate,
+        time: tTime,
+        priority: tPriority
+      });
+      setEditingTaskId(null);
+    } else {
+      const newTask = {
+        name: tName,
+        desc: tDesc,
+        assignedById: currentUser.id,
+        assignedByName: currentUser.name,
+        assignedToId: aUser.id,
+        assignedToName: aUser.name,
+        assignedByLevel: currentUser.level,
+        assignedToLevel: aUser.level,
+        date: tDate,
+        time: tTime,
+        priority: tPriority,
+        status: 'pending', 
+        createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+        deletedBy: null
+      };
+      await db.collection('dt_tasks').add(newTask);
+    }
     setTName(''); setTDesc(''); setTAssignee(''); setTDate(''); setTTime(''); setTPriority('Medium');
   };
 
@@ -493,7 +524,7 @@ function Dashboard({ currentUser, users, tasks, logout }) {
                           
                           {canEditDelete && (
                             <>
-                              <button className="icon-btn" title="Edit"><Icons.Edit /></button>
+                              <button onClick={() => handleEditClick(task)} className="icon-btn" title="Edit"><Icons.Edit /></button>
                               <button onClick={() => setDeleteModalContent({id: task.id, name: task.name})} className="icon-btn danger" title="Delete"><Icons.Trash /></button>
                             </>
                           )}
@@ -507,7 +538,7 @@ function Dashboard({ currentUser, users, tasks, logout }) {
 
         <div className="sidebar">
           <div className="glass-panel task-form-panel">
-            <h3>Create Directive</h3>
+            <h3>{editingTaskId ? 'Edit Directive' : 'Create Directive'}</h3>
             {formError && <div className="alert-warning">{formError}</div>}
             <form onSubmit={handleCreateTask} style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
                <div className="form-group">
@@ -543,7 +574,14 @@ function Dashboard({ currentUser, users, tasks, logout }) {
                    <option value="Low">Low</option>
                  </select>
                </div>
-               <button type="submit" className="btn-primary" style={{marginTop: '0.5rem'}}>Add Directive</button>
+               <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.5rem' }}>
+                 <button type="submit" className="btn-primary" style={{flex: 1}}>
+                   {editingTaskId ? 'Update Directive' : 'Add Directive'}
+                 </button>
+                 {editingTaskId && (
+                   <button type="button" onClick={cancelEdit} className="btn-secondary">Cancel</button>
+                 )}
+               </div>
             </form>
           </div>
         </div>
