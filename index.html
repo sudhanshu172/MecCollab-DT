@@ -11,6 +11,11 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    
+    <!-- Firebase SDK (Using v8 so it executes flawlessly on raw local files) -->
+    <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-app.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-firestore.js"></script>
+    
     <!-- React & ReactDOM -->
     <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
     <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
@@ -20,6 +25,23 @@
 <body>
     <div id="root"></div>
     <script type="text/babel" data-type="module">
+
+const firebaseConfig = {
+  apiKey: "AIzaSyB8fxk1Z8dhu4-mOPI7Oud3vaB64Vub1v4",
+  authDomain: "meccollab.firebaseapp.com",
+  projectId: "meccollab",
+  storageBucket: "meccollab.firebasestorage.app",
+  messagingSenderId: "348511930471",
+  appId: "1:348511930471:web:07fa0ff7ab55b46dbd6cc2",
+  measurementId: "G-9J64L66ZEX"
+};
+
+// Initialize Firebase
+if (!firebase.apps.length) {
+  firebase.initializeApp(firebaseConfig);
+}
+const db = firebase.firestore();
+
 const { useState, useEffect, useMemo } = React;
 
 const INITIAL_USERS = [
@@ -39,23 +61,9 @@ const Icons = {
 };
 
 function App() {
-  const [users, setUsers] = useState(() => {
-    const saved = localStorage.getItem('dt_users');
-    if (saved) {
-      let parsed = JSON.parse(saved);
-      return parsed.map(u => {
-        const initialConfig = INITIAL_USERS.find(iu => iu.id === u.id);
-        return initialConfig ? { ...u, role: initialConfig.role } : u;
-      });
-    }
-    return INITIAL_USERS;
-  });
-
-  const [tasks, setTasks] = useState(() => {
-    const saved = localStorage.getItem('dt_tasks');
-    return saved ? JSON.parse(saved) : [];
-  });
-
+  const [users, setUsers] = useState([]);
+  const [tasks, setTasks] = useState([]);
+  
   const [currentUser, setCurrentUser] = useState(() => {
     const saved = sessionStorage.getItem('dt_current_user');
     return saved ? JSON.parse(saved) : null;
@@ -70,13 +78,32 @@ function App() {
   const [changeNewPw, setChangeNewPw] = useState('');
   const [changeConfirmPw, setChangeConfirmPw] = useState('');
 
+  // Firebase Realtime Subscriptions
   useEffect(() => {
-    localStorage.setItem('dt_users', JSON.stringify(users));
-  }, [users]);
+    const unsubscribeUsers = db.collection('dt_users').onSnapshot(snap => {
+      if (snap.empty) {
+        // Build initial cloud DB
+        INITIAL_USERS.forEach(u => {
+          db.collection('dt_users').doc(u.id).set(u);
+        });
+      } else {
+        const uList = [];
+        snap.forEach(doc => uList.push(doc.data()));
+        setUsers(uList);
+      }
+    });
 
-  useEffect(() => {
-    localStorage.setItem('dt_tasks', JSON.stringify(tasks));
-  }, [tasks]);
+    const unsubscribeTasks = db.collection('dt_tasks').onSnapshot(snap => {
+      const tList = [];
+      snap.forEach(doc => tList.push({ ...doc.data(), id: doc.id }));
+      setTasks(tList);
+    });
+
+    return () => {
+      unsubscribeUsers();
+      unsubscribeTasks();
+    };
+  }, []);
 
   useEffect(() => {
     if (currentUser) {
@@ -109,6 +136,10 @@ function App() {
   const handleLogin = (e) => {
     e.preventDefault();
     setAuthError('');
+    if (users.length === 0) {
+      setAuthError('Database connecting... Please wait 2 seconds.');
+      return;
+    }
     const user = users.find(u => u.id === loginId && u.password === loginPw);
     if (user) {
       setCurrentUser(user);
@@ -117,19 +148,23 @@ function App() {
     }
   };
 
-  const handlePasswordChange = (e, isForce = false) => {
+  const handlePasswordChange = async (e, isForce = false) => {
     e.preventDefault();
     setAuthError('');
     if (changeNewPw !== changeConfirmPw) {
       setAuthError('New passwords do not match'); return;
     }
+    
     if (isForce) {
        if (changeNewPw.length < 4) {
          setAuthError('Password must be at least 4 characters'); return;
        }
-       const updatedUsers = users.map(u => u.id === currentUser.id ? { ...u, password: changeNewPw, requiresPasswordChange: false } : u);
-       setUsers(updatedUsers);
-       const updatedUser = updatedUsers.find(u => u.id === currentUser.id);
+       await db.collection('dt_users').doc(currentUser.id).update({
+         password: changeNewPw,
+         requiresPasswordChange: false
+       });
+       
+       const updatedUser = { ...currentUser, password: changeNewPw, requiresPasswordChange: false };
        setCurrentUser(updatedUser);
        setChangeNewPw(''); setChangeConfirmPw('');
     } else {
@@ -140,8 +175,12 @@ function App() {
        if (changeNewPw.length < 4) {
          setAuthError('Password must be at least 4 characters'); return;
        }
-       const updatedUsers = users.map(u => u.id === loginId ? { ...u, password: changeNewPw, requiresPasswordChange: false } : u);
-       setUsers(updatedUsers);
+       
+       await db.collection('dt_users').doc(loginId).update({
+         password: changeNewPw,
+         requiresPasswordChange: false
+       });
+
        setAuthError('Password updated successfully! Please login.');
        setView('login');
        setChangeOldPw(''); setChangeNewPw(''); setChangeConfirmPw(''); setLoginPw(''); setLoginId('');
@@ -250,10 +289,10 @@ function App() {
     );
   }
 
-  return <Dashboard currentUser={currentUser} users={users} tasks={tasks} setTasks={setTasks} logout={logout} />;
+  return <Dashboard currentUser={currentUser} users={users} tasks={tasks} logout={logout} />;
 }
 
-function Dashboard({ currentUser, users, tasks, setTasks, logout }) {
+function Dashboard({ currentUser, users, tasks, logout }) {
   const [activeTab, setActiveTab] = useState('All tasks');
   const [deleteModalContent, setDeleteModalContent] = useState(null); 
 
@@ -280,7 +319,7 @@ function Dashboard({ currentUser, users, tasks, setTasks, logout }) {
      document.body.removeChild(link);
   };
 
-  const handleCreateTask = (e) => {
+  const handleCreateTask = async (e) => {
     e.preventDefault();
     if (!tName || !tDesc || !tAssignee || !tDate || !tPriority) {
        setFormError('Please fill all inputs except time.');
@@ -290,7 +329,6 @@ function Dashboard({ currentUser, users, tasks, setTasks, logout }) {
     
     let aUser = users.find(u => u.id === tAssignee);
     const newTask = {
-      id: Date.now().toString(),
       name: tName,
       desc: tDesc,
       assignedById: currentUser.id,
@@ -303,33 +341,27 @@ function Dashboard({ currentUser, users, tasks, setTasks, logout }) {
       time: tTime,
       priority: tPriority,
       status: 'pending', 
-      createdAt: new Date().toISOString(),
+      createdAt: firebase.firestore.FieldValue.serverTimestamp(),
       deletedBy: null
     };
 
-    setTasks([...tasks, newTask]);
+    await db.collection('dt_tasks').add(newTask);
     setTName(''); setTDesc(''); setTAssignee(''); setTDate(''); setTTime(''); setTPriority('Medium');
   };
 
-  const handleTaskAction = (taskId, action) => {
-    const updated = tasks.map(t => {
-      if (t.id === taskId) {
-        if (action === 'complete') return { ...t, status: 'completed' };
-        if (action === 'reopen') return { ...t, status: 'pending' };
-      }
-      return t;
-    });
-    setTasks(updated);
+  const handleTaskAction = async (taskId, action) => {
+    if (action === 'complete') {
+      await db.collection('dt_tasks').doc(taskId).update({ status: 'completed' });
+    } else if (action === 'reopen') {
+      await db.collection('dt_tasks').doc(taskId).update({ status: 'pending' });
+    }
   };
 
-  const confirmDelete = (taskId) => {
-    const updated = tasks.map(t => {
-      if (t.id === taskId) {
-        return { ...t, status: 'deleted', deletedBy: currentUser.name };
-      }
-      return t;
+  const confirmDelete = async (taskId) => {
+    await db.collection('dt_tasks').doc(taskId).update({ 
+      status: 'deleted', 
+      deletedBy: currentUser.name 
     });
-    setTasks(updated);
     setDeleteModalContent(null);
   };
 
@@ -337,13 +369,13 @@ function Dashboard({ currentUser, users, tasks, setTasks, logout }) {
   const showDeletedTab = isMaster || currentUser.id === 'C8642';
 
   const processedTasks = useMemo(() => {
-    let filtered = tasks;
+    let filtered = [...tasks];
     
-    if (activeTab === 'All tasks') filtered = tasks.filter(t => t.status !== 'deleted');
-    else if (activeTab === 'Pending') filtered = tasks.filter(t => t.status === 'pending');
-    else if (activeTab === 'Completed') filtered = tasks.filter(t => t.status === 'completed');
-    else if (activeTab === 'Assigned to me') filtered = tasks.filter(t => t.status !== 'deleted' && t.assignedToId === currentUser.id);
-    else if (activeTab === 'Deleted tasks') filtered = tasks.filter(t => t.status === 'deleted');
+    if (activeTab === 'All tasks') filtered = filtered.filter(t => t.status !== 'deleted');
+    else if (activeTab === 'Pending') filtered = filtered.filter(t => t.status === 'pending');
+    else if (activeTab === 'Completed') filtered = filtered.filter(t => t.status === 'completed');
+    else if (activeTab === 'Assigned to me') filtered = filtered.filter(t => t.status !== 'deleted' && t.assignedToId === currentUser.id);
+    else if (activeTab === 'Deleted tasks') filtered = filtered.filter(t => t.status === 'deleted');
 
     const priorityWeight = { 'High': 3, 'Medium': 2, 'Low': 1 };
     const todayStr = new Date().toISOString().split('T')[0];
@@ -358,7 +390,7 @@ function Dashboard({ currentUser, users, tasks, setTasks, logout }) {
       if (a.date !== b.date) {
         return a.date.localeCompare(b.date);
       }
-      return priorityWeight[b.priority] - priorityWeight[a.priority];
+      return priorityWeight[b.priority] - (priorityWeight[a.priority] || 0);
     });
 
     return filtered;
@@ -432,7 +464,7 @@ function Dashboard({ currentUser, users, tasks, setTasks, logout }) {
                 const canEditDelete = isMaster || task.assignedById === currentUser.id;
 
                 return (
-                  <div key={task.id} className={`glass-panel task-card priority-${task.priority.toLowerCase()} ${isOverdue ? 'overdue' : ''} status-${task.status}`}>
+                  <div key={task.id} className={`glass-panel task-card priority-${task.priority?.toLowerCase() || 'medium'} ${isOverdue ? 'overdue' : ''} status-${task.status}`}>
                      <div className="task-header">
                        <h4 className="task-title">{task.name}</h4>
                        <div className="task-badges">
