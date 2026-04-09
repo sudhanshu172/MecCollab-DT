@@ -68,6 +68,7 @@ function App() {
 
   const [changeOldPw, setChangeOldPw] = useState('');
   const [changeNewPw, setChangeNewPw] = useState('');
+  const [changeConfirmPw, setChangeConfirmPw] = useState('');
 
   useEffect(() => {
     localStorage.setItem('dt_users', JSON.stringify(users));
@@ -119,6 +120,9 @@ function App() {
   const handlePasswordChange = (e, isForce = false) => {
     e.preventDefault();
     setAuthError('');
+    if (changeNewPw !== changeConfirmPw) {
+      setAuthError('New passwords do not match'); return;
+    }
     if (isForce) {
        if (changeNewPw.length < 4) {
          setAuthError('Password must be at least 4 characters'); return;
@@ -127,7 +131,7 @@ function App() {
        setUsers(updatedUsers);
        const updatedUser = updatedUsers.find(u => u.id === currentUser.id);
        setCurrentUser(updatedUser);
-       setChangeNewPw('');
+       setChangeNewPw(''); setChangeConfirmPw('');
     } else {
        const user = users.find(u => u.id === loginId && u.password === changeOldPw);
        if (!user) {
@@ -140,12 +144,14 @@ function App() {
        setUsers(updatedUsers);
        setAuthError('Password updated successfully! Please login.');
        setView('login');
-       setChangeOldPw(''); setChangeNewPw(''); setLoginPw('');
+       setChangeOldPw(''); setChangeNewPw(''); setChangeConfirmPw(''); setLoginPw(''); setLoginId('');
     }
   };
 
   const logout = () => {
     setCurrentUser(null);
+    setLoginId('');
+    setLoginPw('');
     setView('login');
   };
 
@@ -205,6 +211,10 @@ function App() {
               <label>New Password</label>
               <input type="password" value={changeNewPw} onChange={e => setChangeNewPw(e.target.value)} required />
             </div>
+             <div className="form-group">
+              <label>Confirm New Password</label>
+              <input type="password" value={changeConfirmPw} onChange={e => setChangeConfirmPw(e.target.value)} required />
+            </div>
             <button type="submit" className="btn-primary">Update Password</button>
           </form>
           <div style={{ textAlign: 'center', marginTop: '1rem' }}>
@@ -228,6 +238,10 @@ function App() {
              <div className="form-group">
               <label>New Password</label>
               <input type="password" value={changeNewPw} onChange={e => setChangeNewPw(e.target.value)} required />
+            </div>
+             <div className="form-group">
+              <label>Confirm New Password</label>
+              <input type="password" value={changeConfirmPw} onChange={e => setChangeConfirmPw(e.target.value)} required />
             </div>
             <button type="submit" className="btn-primary">Set Password & Continue</button>
           </form>
