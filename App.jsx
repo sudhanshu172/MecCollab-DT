@@ -1,0 +1,493 @@
+const { useState, useEffect, useMemo } = React;
+
+const INITIAL_USERS = [
+  { id: '96714', name: 'K. Tulasidhar', role: 'DGM-I/c', level: 1, password: 'DT@123', requiresPasswordChange: true },
+  { id: 'C8642', name: 'Sudhanshu Ranjan', role: 'Deputy Manager', level: 2, password: 'DT@123', requiresPasswordChange: true },
+  { id: 'D1668', name: 'Rachit Bundiwal', role: 'Assistant Manager', level: 3, password: 'DT@123', requiresPasswordChange: true }
+];
+
+// Simple SVG Icons
+const Icons = {
+  Trash: () => <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>,
+  Edit: () => <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>,
+  Check: () => <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>,
+  User: () => <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>,
+  LogOut: () => <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>,
+  Download: () => <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+};
+
+function App() {
+  const [users, setUsers] = useState(() => {
+    const saved = localStorage.getItem('dt_users');
+    if (saved) {
+      let parsed = JSON.parse(saved);
+      return parsed.map(u => {
+        const initialConfig = INITIAL_USERS.find(iu => iu.id === u.id);
+        return initialConfig ? { ...u, role: initialConfig.role } : u;
+      });
+    }
+    return INITIAL_USERS;
+  });
+
+  const [tasks, setTasks] = useState(() => {
+    const saved = localStorage.getItem('dt_tasks');
+    return saved ? JSON.parse(saved) : [];
+  });
+
+  const [currentUser, setCurrentUser] = useState(() => {
+    const saved = sessionStorage.getItem('dt_current_user');
+    return saved ? JSON.parse(saved) : null;
+  });
+
+  const [view, setView] = useState('login'); // login, changePassword, forcePasswordChange, dashboard
+  const [loginId, setLoginId] = useState('');
+  const [loginPw, setLoginPw] = useState('');
+  const [authError, setAuthError] = useState('');
+
+  // Password Change state
+  const [changeOldPw, setChangeOldPw] = useState('');
+  const [changeNewPw, setChangeNewPw] = useState('');
+
+  useEffect(() => {
+    localStorage.setItem('dt_users', JSON.stringify(users));
+  }, [users]);
+
+  useEffect(() => {
+    localStorage.setItem('dt_tasks', JSON.stringify(tasks));
+  }, [tasks]);
+
+  useEffect(() => {
+    if (currentUser) {
+      sessionStorage.setItem('dt_current_user', JSON.stringify(currentUser));
+      if (currentUser.requiresPasswordChange) {
+        setView('forcePasswordChange');
+      } else {
+        setView('dashboard');
+      }
+    } else {
+      sessionStorage.removeItem('dt_current_user');
+      setView('login');
+    }
+  }, [currentUser]);
+
+  const handleLogin = (e) => {
+    e.preventDefault();
+    setAuthError('');
+    const user = users.find(u => u.id === loginId && u.password === loginPw);
+    if (user) {
+      setCurrentUser(user);
+    } else {
+      setAuthError('Invalid Employee ID or Password');
+    }
+  };
+
+  const handlePasswordChange = (e, isForce = false) => {
+    e.preventDefault();
+    setAuthError('');
+    if (isForce) {
+       // user is logged in, old pw is their current pw
+       if (changeNewPw.length < 4) {
+         setAuthError('Password must be at least 4 characters'); return;
+       }
+       const updatedUsers = users.map(u => u.id === currentUser.id ? { ...u, password: changeNewPw, requiresPasswordChange: false } : u);
+       setUsers(updatedUsers);
+       const updatedUser = updatedUsers.find(u => u.id === currentUser.id);
+       setCurrentUser(updatedUser);
+       setChangeNewPw('');
+    } else {
+       // change password from login screen
+       const user = users.find(u => u.id === loginId && u.password === changeOldPw);
+       if (!user) {
+         setAuthError('Incorrect ID or Current Password'); return;
+       }
+       if (changeNewPw.length < 4) {
+         setAuthError('Password must be at least 4 characters'); return;
+       }
+       const updatedUsers = users.map(u => u.id === loginId ? { ...u, password: changeNewPw, requiresPasswordChange: false } : u);
+       setUsers(updatedUsers);
+       setAuthError('Password updated successfully! Please login.');
+       setView('login');
+       setChangeOldPw(''); setChangeNewPw(''); setLoginPw('');
+    }
+  };
+
+  const logout = () => setCurrentUser(null);
+
+  if (!currentUser && view === 'login') {
+    return (
+      <div className="auth-container">
+        <div className="glass-panel auth-box">
+          <div className="auth-header">
+            <h1>DT To-Do System</h1>
+            <p>Enter your credentials to continue</p>
+          </div>
+          {authError && <div className="alert-warning">{authError}</div>}
+          <form onSubmit={handleLogin} style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+            <div className="form-group">
+              <label>Select User</label>
+              <select value={loginId} onChange={e => setLoginId(e.target.value)} required>
+                <option value="">Select User...</option>
+                {users.map(u => <option key={u.id} value={u.id}>{u.name} ({u.role})</option>)}
+              </select>
+            </div>
+            <div className="form-group">
+              <label>Password</label>
+              <input type="password" value={loginPw} onChange={e => setLoginPw(e.target.value)} required />
+            </div>
+            <button type="submit" className="btn-primary">Login</button>
+          </form>
+          <div style={{ textAlign: 'center', marginTop: '1rem' }}>
+            <button className="btn-logout" onClick={() => { setView('changePassword'); setAuthError(''); }}>Forgot / Change Password?</button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (!currentUser && view === 'changePassword') {
+    return (
+       <div className="auth-container">
+        <div className="glass-panel auth-box">
+          <div className="auth-header">
+            <h1>Change Password</h1>
+            <p>Update your credentials securely</p>
+          </div>
+          {authError && <div className="alert-warning">{authError}</div>}
+          <form onSubmit={(e) => handlePasswordChange(e, false)} style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+            <div className="form-group">
+              <label>Select User</label>
+              <select value={loginId} onChange={e => setLoginId(e.target.value)} required>
+                <option value="">Select User...</option>
+                {users.map(u => <option key={u.id} value={u.id}>{u.name} ({u.role})</option>)}
+              </select>
+            </div>
+            <div className="form-group">
+              <label>Current Password</label>
+              <input type="password" value={changeOldPw} onChange={e => setChangeOldPw(e.target.value)} required />
+            </div>
+             <div className="form-group">
+              <label>New Password</label>
+              <input type="password" value={changeNewPw} onChange={e => setChangeNewPw(e.target.value)} required />
+            </div>
+            <button type="submit" className="btn-primary">Update Password</button>
+          </form>
+          <div style={{ textAlign: 'center', marginTop: '1rem' }}>
+            <button className="btn-logout" onClick={() => { setView('login'); setAuthError(''); }}>Back to Login</button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (currentUser && view === 'forcePasswordChange') {
+    return (
+       <div className="auth-container">
+        <div className="glass-panel auth-box">
+          <div className="auth-header">
+            <h1>Welcome, {currentUser.name}</h1>
+            <p>Please set a new password for your first login</p>
+          </div>
+          {authError && <div className="alert-warning">{authError}</div>}
+          <form onSubmit={(e) => handlePasswordChange(e, true)} style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+             <div className="form-group">
+              <label>New Password</label>
+              <input type="password" value={changeNewPw} onChange={e => setChangeNewPw(e.target.value)} required />
+            </div>
+            <button type="submit" className="btn-primary">Set Password & Continue</button>
+          </form>
+        </div>
+      </div>
+    );
+  }
+
+  return <Dashboard currentUser={currentUser} users={users} tasks={tasks} setTasks={setTasks} logout={logout} />;
+}
+
+function Dashboard({ currentUser, users, tasks, setTasks, logout }) {
+  const [activeTab, setActiveTab] = useState('All tasks');
+  const [deleteModalContent, setDeleteModalContent] = useState(null); // { taskId } 
+
+  // New task form state
+  const [tName, setTName] = useState('');
+  const [tDesc, setTDesc] = useState('');
+  const [tAssignee, setTAssignee] = useState('');
+  const [tDate, setTDate] = useState('');
+  const [tTime, setTTime] = useState('');
+  const [tPriority, setTPriority] = useState('Medium');
+  const [formError, setFormError] = useState('');
+
+  const handleExportCSV = () => {
+     let csvContent = "data:text/csv;charset=utf-8,ID,Title,Description,Assigned From,Assigned To,Date,Time,Priority,Status\n";
+     tasks.forEach(t => {
+       const row = [t.id, t.name, t.desc, t.assignedByName, t.assignedToName, t.date, t.time || 'N/A', t.priority, t.status];
+       csvContent += row.map(v => `"${v}"`).join(",") + "\n";
+     });
+     const encodedUri = encodeURI(csvContent);
+     const link = document.createElement("a");
+     link.setAttribute("href", encodedUri);
+     link.setAttribute("download", "dt_tasks_export.csv");
+     document.body.appendChild(link);
+     link.click();
+     document.body.removeChild(link);
+  };
+
+  const handleCreateTask = (e) => {
+    e.preventDefault();
+    if (!tName || !tDesc || !tAssignee || !tDate || !tPriority) {
+       setFormError('Please fill all inputs except time.');
+       return;
+    }
+    setFormError('');
+    
+    let aUser = users.find(u => u.id === tAssignee);
+    const newTask = {
+      id: Date.now().toString(),
+      name: tName,
+      desc: tDesc,
+      assignedById: currentUser.id,
+      assignedByName: currentUser.name,
+      assignedToId: aUser.id,
+      assignedToName: aUser.name,
+      assignedByLevel: currentUser.level,
+      assignedToLevel: aUser.level,
+      date: tDate,
+      time: tTime,
+      priority: tPriority,
+      status: 'pending', // pending, completed, deleted
+      createdAt: new Date().toISOString(),
+      deletedBy: null
+    };
+
+    setTasks([...tasks, newTask]);
+    setTName(''); setTDesc(''); setTAssignee(''); setTDate(''); setTTime(''); setTPriority('Medium');
+  };
+
+  const handleTaskAction = (taskId, action) => {
+    const updated = tasks.map(t => {
+      if (t.id === taskId) {
+        if (action === 'complete') return { ...t, status: 'completed' };
+        if (action === 'reopen') return { ...t, status: 'pending' };
+      }
+      return t;
+    });
+    setTasks(updated);
+  };
+
+  const confirmDelete = (taskId) => {
+    const updated = tasks.map(t => {
+      if (t.id === taskId) {
+        return { ...t, status: 'deleted', deletedBy: currentUser.name };
+      }
+      return t;
+    });
+    setTasks(updated);
+    setDeleteModalContent(null);
+  };
+
+  const isMaster = currentUser.id === '96714';
+  const showDeletedTab = isMaster || currentUser.id === 'C8642';
+
+  const processedTasks = useMemo(() => {
+    let filtered = tasks;
+    
+    if (activeTab === 'All tasks') filtered = tasks.filter(t => t.status !== 'deleted');
+    else if (activeTab === 'Pending') filtered = tasks.filter(t => t.status === 'pending');
+    else if (activeTab === 'Completed') filtered = tasks.filter(t => t.status === 'completed');
+    else if (activeTab === 'Assigned to me') filtered = tasks.filter(t => t.status !== 'deleted' && t.assignedToId === currentUser.id);
+    else if (activeTab === 'Deleted tasks') filtered = tasks.filter(t => t.status === 'deleted');
+
+    // Sorting Logic
+    const priorityWeight = { 'High': 3, 'Medium': 2, 'Low': 1 };
+    const todayStr = new Date().toISOString().split('T')[0];
+
+    filtered.sort((a, b) => {
+      // Overdue first (only if pending)
+      const aIsOverdue = a.status === 'pending' && a.date < todayStr;
+      const bIsOverdue = b.status === 'pending' && b.date < todayStr;
+      
+      if (aIsOverdue && !bIsOverdue) return -1;
+      if (!aIsOverdue && bIsOverdue) return 1;
+
+      // Primary sort by Date
+      if (a.date !== b.date) {
+        return a.date.localeCompare(b.date);
+      }
+
+      // Secondary sort by Priority
+      return priorityWeight[b.priority] - priorityWeight[a.priority];
+    });
+
+    return filtered;
+  }, [tasks, activeTab, currentUser.id]);
+
+  const stats = {
+    all: tasks.filter(t => t.status !== 'deleted').length,
+    pending: tasks.filter(t => t.status === 'pending').length,
+    completed: tasks.filter(t => t.status === 'completed').length
+  };
+
+  return (
+    <div className="app-container">
+      <header className="app-header">
+        <div className="header-brand">
+          <h1>DT Dashboard</h1>
+        </div>
+        <div className="header-actions">
+           {currentUser.id === 'C8642' && (
+              <button className="btn-success" onClick={handleExportCSV} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                <Icons.Download /> Export Data
+              </button>
+           )}
+           <div className="profile-pill">
+             <div className="profile-icon"><Icons.User /></div>
+             <div className="profile-info">
+               <span className="profile-name">{currentUser.name}</span>
+               <span className="profile-role">{currentUser.role}</span>
+             </div>
+           </div>
+           <button onClick={logout} className="btn-logout" style={{display: 'flex', alignItems: 'center', gap:'4px'}}>
+             Logout <Icons.LogOut />
+           </button>
+        </div>
+      </header>
+
+      <div className="dashboard-stats">
+        <div className="glass-panel stat-card">
+          <span className="stat-label">Active Tasks</span>
+          <span className="stat-value" style={{color: '#4f46e5'}}>{stats.all}</span>
+        </div>
+        <div className="glass-panel stat-card">
+          <span className="stat-label">Pending</span>
+          <span className="stat-value" style={{color: '#f97316'}}>{stats.pending}</span>
+        </div>
+        <div className="glass-panel stat-card">
+          <span className="stat-label">Completed</span>
+          <span className="stat-value" style={{color: '#10b981'}}>{stats.completed}</span>
+        </div>
+      </div>
+
+      <div className="main-content">
+        <div className="task-feed">
+           <div className="tabs">
+             {['All tasks', 'Pending', 'Completed', 'Assigned to me'].map(t => (
+               <button key={t} className={`tab-btn ${activeTab === t ? 'active' : ''}`} onClick={() => setActiveTab(t)}>{t}</button>
+             ))}
+             {showDeletedTab && (
+                <button className={`tab-btn ${activeTab === 'Deleted tasks' ? 'active' : ''}`} onClick={() => setActiveTab('Deleted tasks')}>Deleted tasks</button>
+             )}
+           </div>
+
+           <div className="task-list">
+             {processedTasks.length === 0 ? (
+               <div style={{ textAlign: 'center', padding: '3rem', color: '#6b7280' }}>
+                 No tasks found in this category.
+               </div>
+             ) : processedTasks.map(task => {
+                const isOverdue = task.status === 'pending' && task.date < new Date().toISOString().split('T')[0];
+                const badgeType = task.assignedByLevel <= task.assignedToLevel ? 'Assign' : 'Request';
+                const canEditDelete = isMaster || task.assignedById === currentUser.id;
+
+                return (
+                  <div key={task.id} className={`glass-panel task-card priority-${task.priority.toLowerCase()} ${isOverdue ? 'overdue' : ''} status-${task.status}`}>
+                     <div className="task-header">
+                       <h4 className="task-title">{task.name}</h4>
+                       <div className="task-badges">
+                          <span className={`badge badge-${badgeType.toLowerCase()}`}>{badgeType}</span>
+                          <span className="badge" style={{background: '#f3f4f6', color: '#4b5563'}}>{task.priority}</span>
+                          {isOverdue && <span className="badge" style={{background: '#fee2e2', color: '#ef4444'}}>Overdue</span>}
+                       </div>
+                     </div>
+                     <p className="task-desc">{task.desc}</p>
+                     
+                     <div className="task-meta">
+                       <span><strong>From:</strong> {task.assignedByName}</span>
+                       <span><strong>To:</strong> {task.assignedToName}</span>
+                       <span><strong>Due Date:</strong> {task.date}</span>
+                       {task.time && <span><strong>Time:</strong> {task.time}</span>}
+                       {task.status === 'deleted' && <span style={{color: '#ef4444'}}><strong>Deleted by:</strong> {task.deletedBy}</span>}
+                     </div>
+
+                     {task.status !== 'deleted' && (
+                       <div className="task-actions">
+                          {task.status === 'pending' ? (
+                            <button onClick={() => handleTaskAction(task.id, 'complete')} className="icon-btn success" title="Mark Completed"><Icons.Check /></button>
+                          ) : (
+                            <button onClick={() => handleTaskAction(task.id, 'reopen')} className="btn-secondary" style={{padding: '0.25rem 0.75rem', fontSize:'0.8rem'}}>Reopen</button>
+                          )}
+                          
+                          {canEditDelete && (
+                            <>
+                              <button className="icon-btn" title="Edit"><Icons.Edit /></button>
+                              <button onClick={() => setDeleteModalContent({id: task.id, name: task.name})} className="icon-btn danger" title="Delete"><Icons.Trash /></button>
+                            </>
+                          )}
+                       </div>
+                     )}
+                  </div>
+                );
+             })}
+           </div>
+        </div>
+
+        <div className="sidebar">
+          <div className="glass-panel task-form-panel">
+            <h3>Create Directive</h3>
+            {formError && <div className="alert-warning">{formError}</div>}
+            <form onSubmit={handleCreateTask} style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+               <div className="form-group">
+                 <label>Task Name *</label>
+                 <input type="text" value={tName} onChange={e => setTName(e.target.value)} />
+               </div>
+               <div className="form-group">
+                 <label>Description *</label>
+                 <textarea value={tDesc} onChange={e => setTDesc(e.target.value)} rows="3" />
+               </div>
+               <div className="form-group">
+                 <label>Assignee *</label>
+                 <select value={tAssignee} onChange={e => setTAssignee(e.target.value)}>
+                   <option value="">Select User...</option>
+                   {users.map(u => <option key={u.id} value={u.id}>{u.name} ({u.role})</option>)}
+                 </select>
+               </div>
+               <div style={{display: 'flex', gap: '1rem'}}>
+                  <div className="form-group" style={{flex: 1}}>
+                    <label>Date *</label>
+                    <input type="date" value={tDate} onChange={e => setTDate(e.target.value)} />
+                  </div>
+                  <div className="form-group" style={{flex: 1}}>
+                    <label>Time (Optional)</label>
+                    <input type="time" value={tTime} onChange={e => setTTime(e.target.value)} />
+                  </div>
+               </div>
+               <div className="form-group">
+                 <label>Priority *</label>
+                 <select value={tPriority} onChange={e => setTPriority(e.target.value)}>
+                   <option value="High">High</option>
+                   <option value="Medium">Medium</option>
+                   <option value="Low">Low</option>
+                 </select>
+               </div>
+               <button type="submit" className="btn-primary" style={{marginTop: '0.5rem'}}>Add Directive</button>
+            </form>
+          </div>
+        </div>
+      </div>
+
+      {deleteModalContent && (
+        <div className="modal-overlay">
+          <div className="glass-panel modal-content">
+             <h3 className="modal-title">Delete Task?</h3>
+             <p className="modal-body">Are you sure you want to delete "{deleteModalContent.name}"? It will be moved to the deleted tasks archive.</p>
+             <div className="modal-actions">
+               <button onClick={() => setDeleteModalContent(null)} className="btn-secondary">Cancel</button>
+               <button onClick={() => confirmDelete(deleteModalContent.id)} className="btn-primary" style={{background: '#ef4444'}}>Yes, Delete</button>
+             </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+const root = ReactDOM.createRoot(document.getElementById('root'));
+root.render(<App />);
