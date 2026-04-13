@@ -16,6 +16,9 @@
     <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-app.js"></script>
     <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-firestore.js"></script>
     
+    <!-- EmailJS SDK for sending OTP emails -->
+    <script src="https://cdn.jsdelivr.net/npm/@emailjs/browser@4/dist/email.min.js"></script>
+
     <!-- React & ReactDOM -->
     <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
     <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
@@ -44,10 +47,19 @@ const db = firebase.firestore();
 
 const { useState, useEffect, useMemo } = React;
 
+// ─── EmailJS Configuration ───
+// Sign up at https://www.emailjs.com and fill in these values:
+const EMAILJS_PUBLIC_KEY = 'WQkA_dBYiZ5PcG1Kg';
+const EMAILJS_SERVICE_ID = 'service_txoqf6p';
+const EMAILJS_TEMPLATE_ID = 'template_s76b1xr';
+
+// Initialize EmailJS
+emailjs.init(EMAILJS_PUBLIC_KEY);
+
 const INITIAL_USERS = [
-  { id: '96714', name: 'K. Tulasidhar', role: 'DGM-I/c', level: 1, password: 'DT@123', requiresPasswordChange: true },
-  { id: 'C8642', name: 'Sudhanshu Ranjan', role: 'Deputy Manager', level: 2, password: 'DT@123', requiresPasswordChange: true },
-  { id: 'D1668', name: 'Rachit Bundiwal', role: 'Assistant Manager', level: 3, password: 'DT@123', requiresPasswordChange: true }
+  { id: '96714', name: 'K. Tulasidhar', role: 'DGM-I/c', level: 1, password: 'DT@123', requiresPasswordChange: true, email: 'tulasidhar@meconlimited.co.in' },
+  { id: 'C8642', name: 'Sudhanshu Ranjan', role: 'Deputy Manager', level: 2, password: 'DT@123', requiresPasswordChange: true, email: 'sudhanshu@meconlimited.co.in' },
+  { id: 'D1668', name: 'Rachit Bundiwal', role: 'Assistant Manager', level: 3, password: 'DT@123', requiresPasswordChange: true, email: 'rachit@meconlimited.co.in' }
 ];
 
 // Simple SVG Icons
@@ -78,6 +90,13 @@ function App() {
   const [changeNewPw, setChangeNewPw] = useState('');
   const [changeConfirmPw, setChangeConfirmPw] = useState('');
 
+  // OTP Forgot Password state
+  const [forgotStep, setForgotStep] = useState(1); // 1=select user, 2=enter OTP, 3=set new password
+  const [otpValue, setOtpValue] = useState('');
+  const [otpSending, setOtpSending] = useState(false);
+  const [otpTimer, setOtpTimer] = useState(0);
+  const [otpSuccess, setOtpSuccess] = useState('');
+
   // Firebase Realtime Subscriptions
   useEffect(() => {
     const unsubscribeUsers = db.collection('dt_users').onSnapshot(snap => {
@@ -90,6 +109,16 @@ function App() {
         const uList = [];
         snap.forEach(doc => uList.push(doc.data()));
         setUsers(uList);
+
+        // One-time migration: patch missing email fields into existing users
+        uList.forEach(u => {
+          if (!u.email) {
+            const initial = INITIAL_USERS.find(iu => iu.id === u.id);
+            if (initial && initial.email) {
+              db.collection('dt_users').doc(u.id).update({ email: initial.email });
+            }
+          }
+        });
       }
     });
 
@@ -132,6 +161,164 @@ function App() {
     window.addEventListener('pageshow', handlePageShow);
     return () => window.removeEventListener('pageshow', handlePageShow);
   }, []);
+
+  // OTP countdown timer
+  useEffect(() => {
+    if (otpTimer <= 0) return;
+    const interval = setInterval(() => {
+      setOtpTimer(prev => prev - 1);
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [otpTimer]);
+
+  const generateOTP = () => {
+    return Math.floor(100000 + Math.random() * 900000).toString();
+  };
+
+  const maskEmail = (email) => {
+    if (!email) return '***';
+    const [user, domain] = email.split('@');
+    const masked = user.slice(0, 2) + '***' + user.slice(-1);
+    return masked + '@' + domain;
+  };
+
+  const handleSendOTP = async () => {
+    setAuthError('');
+    setOtpSuccess('');
+    if (!loginId) {
+      setAuthError('Please select a user first');
+      return;
+    }
+    const user = users.find(u => u.id === loginId);
+    if (!user || !user.email) {
+      setAuthError('No email configured for this user. Contact admin.');
+      return;
+    }
+
+    setOtpSending(true);
+    const otp = generateOTP();
+    const expiresAt = Date.now() + 5 * 60 * 1000; // 5 minutes
+
+    try {
+      // Store OTP in Firestore
+      await db.collection('dt_otp').doc(loginId).set({
+        otp: otp,
+        expiresAt: expiresAt,
+        attempts: 0
+      });
+
+      // Send OTP via EmailJS
+      await emailjs.send(EMAILJS_SERVICE_ID, EMAILJS_TEMPLATE_ID, {
+        to_name: user.name,
+        to_email: user.email,
+        otp_code: otp,
+        app_name: 'DT To-Do System'
+      });
+
+      setOtpSending(false);
+      setOtpTimer(120); // 2-minute resend cooldown
+      setForgotStep(2);
+      setOtpSuccess('OTP sent to ' + maskEmail(user.email));
+    } catch (err) {
+      setOtpSending(false);
+      console.error('OTP send error:', err);
+      setAuthError('Failed to send OTP. Please check EmailJS configuration or try again.');
+    }
+  };
+
+  const handleVerifyOTP = async () => {
+    setAuthError('');
+    setOtpSuccess('');
+    if (otpValue.length !== 6) {
+      setAuthError('Please enter the 6-digit OTP');
+      return;
+    }
+
+    try {
+      const otpDoc = await db.collection('dt_otp').doc(loginId).get();
+      if (!otpDoc.exists) {
+        setAuthError('OTP expired or not found. Please request a new one.');
+        return;
+      }
+
+      const otpData = otpDoc.data();
+
+      if (otpData.attempts >= 5) {
+        setAuthError('Too many failed attempts. Please request a new OTP.');
+        await db.collection('dt_otp').doc(loginId).delete();
+        return;
+      }
+
+      if (Date.now() > otpData.expiresAt) {
+        setAuthError('OTP has expired. Please request a new one.');
+        await db.collection('dt_otp').doc(loginId).delete();
+        return;
+      }
+
+      if (otpData.otp !== otpValue) {
+        await db.collection('dt_otp').doc(loginId).update({
+          attempts: otpData.attempts + 1
+        });
+        setAuthError('Incorrect OTP. ' + (4 - otpData.attempts) + ' attempts remaining.');
+        return;
+      }
+
+      // OTP verified — move to set new password step
+      await db.collection('dt_otp').doc(loginId).delete();
+      setForgotStep(3);
+      setOtpSuccess('OTP verified successfully! Set your new password.');
+    } catch (err) {
+      console.error('OTP verify error:', err);
+      setAuthError('Verification failed. Please try again.');
+    }
+  };
+
+  const handleResetPasswordWithOTP = async (e) => {
+    e.preventDefault();
+    setAuthError('');
+    setOtpSuccess('');
+
+    if (changeNewPw.length < 4) {
+      setAuthError('Password must be at least 4 characters');
+      return;
+    }
+    if (changeNewPw !== changeConfirmPw) {
+      setAuthError('New passwords do not match');
+      return;
+    }
+
+    try {
+      await db.collection('dt_users').doc(loginId).update({
+        password: changeNewPw,
+        requiresPasswordChange: false
+      });
+
+      setAuthError('');
+      setOtpSuccess('Password reset successfully! Please login.');
+      setTimeout(() => {
+        setView('login');
+        setForgotStep(1);
+        setChangeNewPw(''); setChangeConfirmPw('');
+        setOtpValue(''); setOtpSuccess(''); setLoginId('');
+      }, 2000);
+    } catch (err) {
+      console.error('Password reset error:', err);
+      setAuthError('Failed to reset password. Please try again.');
+    }
+  };
+
+  const resetForgotFlow = () => {
+    setView('login');
+    setForgotStep(1);
+    setOtpValue('');
+    setOtpSending(false);
+    setOtpTimer(0);
+    setAuthError('');
+    setOtpSuccess('');
+    setChangeNewPw('');
+    setChangeConfirmPw('');
+    setLoginId('');
+  };
 
   const handleLogin = (e) => {
     e.preventDefault();
@@ -217,8 +404,114 @@ function App() {
             </div>
             <button type="submit" className="btn-primary">Login</button>
           </form>
+          <div style={{ textAlign: 'center', marginTop: '1rem', display: 'flex', gap: '1rem', justifyContent: 'center' }}>
+            <button className="btn-logout" onClick={() => { setView('forgotPassword'); setAuthError(''); setOtpSuccess(''); setForgotStep(1); }}>Forgot Password?</button>
+            <button className="btn-logout" onClick={() => { setView('changePassword'); setAuthError(''); }}>Change Password</button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (!currentUser && view === 'forgotPassword') {
+    return (
+      <div className="auth-container">
+        <div className="glass-panel auth-box">
+          <div className="auth-header">
+            <h1>Reset Password</h1>
+            <p>
+              {forgotStep === 1 && 'Select your account to receive an OTP'}
+              {forgotStep === 2 && 'Enter the 6-digit code sent to your email'}
+              {forgotStep === 3 && 'Set your new password'}
+            </p>
+          </div>
+
+          {/* Step indicators */}
+          <div className="otp-steps">
+            <div className={`otp-step ${forgotStep >= 1 ? 'active' : ''}`}><span>1</span> Verify Identity</div>
+            <div className={`otp-step ${forgotStep >= 2 ? 'active' : ''}`}><span>2</span> Enter OTP</div>
+            <div className={`otp-step ${forgotStep >= 3 ? 'active' : ''}`}><span>3</span> New Password</div>
+          </div>
+
+          {authError && <div className="alert-warning">{authError}</div>}
+          {otpSuccess && <div className="alert-success">{otpSuccess}</div>}
+
+          {/* Step 1: Select user and send OTP */}
+          {forgotStep === 1 && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+              <div className="form-group">
+                <label>Select User</label>
+                <select value={loginId} onChange={e => setLoginId(e.target.value)} required>
+                  <option value="">Select User...</option>
+                  {users.map(u => <option key={u.id} value={u.id}>{u.name} ({u.role})</option>)}
+                </select>
+              </div>
+              {loginId && users.find(u => u.id === loginId)?.email && (
+                <p style={{ fontSize: '0.85rem', color: '#6b7280' }}>
+                  OTP will be sent to: <strong>{maskEmail(users.find(u => u.id === loginId).email)}</strong>
+                </p>
+              )}
+              <button
+                className="btn-primary"
+                onClick={handleSendOTP}
+                disabled={otpSending || !loginId}
+                style={{ opacity: (otpSending || !loginId) ? 0.6 : 1 }}
+              >
+                {otpSending ? 'Sending OTP...' : 'Send OTP'}
+              </button>
+            </div>
+          )}
+
+          {/* Step 2: Enter OTP */}
+          {forgotStep === 2 && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+              <div className="form-group">
+                <label>Enter 6-Digit OTP</label>
+                <input
+                  type="text"
+                  value={otpValue}
+                  onChange={e => {
+                    const val = e.target.value.replace(/\D/g, '').slice(0, 6);
+                    setOtpValue(val);
+                  }}
+                  placeholder="000000"
+                  maxLength="6"
+                  className="otp-input"
+                  autoFocus
+                />
+              </div>
+              <button className="btn-primary" onClick={handleVerifyOTP} disabled={otpValue.length !== 6}>
+                Verify OTP
+              </button>
+              <div style={{ textAlign: 'center', fontSize: '0.85rem', color: '#6b7280' }}>
+                {otpTimer > 0 ? (
+                  <span>Resend OTP in <strong>{Math.floor(otpTimer / 60)}:{String(otpTimer % 60).padStart(2, '0')}</strong></span>
+                ) : (
+                  <button className="btn-logout" onClick={handleSendOTP} disabled={otpSending}>
+                    {otpSending ? 'Sending...' : 'Resend OTP'}
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Step 3: Set new password */}
+          {forgotStep === 3 && (
+            <form onSubmit={handleResetPasswordWithOTP} style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+              <div className="form-group">
+                <label>New Password</label>
+                <input type="password" value={changeNewPw} onChange={e => setChangeNewPw(e.target.value)} required />
+              </div>
+              <div className="form-group">
+                <label>Confirm New Password</label>
+                <input type="password" value={changeConfirmPw} onChange={e => setChangeConfirmPw(e.target.value)} required />
+              </div>
+              <button type="submit" className="btn-primary">Reset Password</button>
+            </form>
+          )}
+
           <div style={{ textAlign: 'center', marginTop: '1rem' }}>
-            <button className="btn-logout" onClick={() => { setView('changePassword'); setAuthError(''); }}>Forgot / Change Password?</button>
+            <button className="btn-logout" onClick={resetForgotFlow}>Back to Login</button>
           </div>
         </div>
       </div>

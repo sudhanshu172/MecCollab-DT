@@ -467,3 +467,71 @@ input:focus, select:focus, textarea:focus {
 .status-completed .task-title {
   text-decoration: line-through;
 }
+
+/* OTP / Forgot Password Styles */
+.otp-steps {
+  display: flex;
+  justify-content: center;
+  gap: 0.5rem;
+  margin-bottom: 1rem;
+}
+
+.otp-step {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: #9ca3af;
+  padding: 0.4rem 0.75rem;
+  border-radius: 999px;
+  background: #f3f4f6;
+  transition: all 0.2s ease;
+}
+
+.otp-step.active {
+  color: #4f46e5;
+  background: #eef2ff;
+  font-weight: 600;
+}
+
+.otp-step span {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: #d1d5db;
+  color: white;
+  font-size: 0.7rem;
+  font-weight: 700;
+}
+
+.otp-step.active span {
+  background: #4f46e5;
+}
+
+.otp-input {
+  text-align: center;
+  font-size: 1.75rem;
+  font-weight: 700;
+  letter-spacing: 0.75rem;
+  padding: 1rem;
+  font-family: 'Inter', monospace;
+}
+
+.otp-input::placeholder {
+  color: #d1d5db;
+  letter-spacing: 0.75rem;
+}
+
+.alert-success {
+  background: #ecfdf5;
+  border: 1px solid #a7f3d0;
+  color: #065f46;
+  padding: 0.75rem;
+  border-radius: 8px;
+  font-size: 0.875rem;
+  margin-bottom: 1rem;
+}

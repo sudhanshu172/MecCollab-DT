@@ -1,9 +1,17 @@
 const { useState, useEffect, useMemo } = React;
 
+// ─── EmailJS Configuration ───
+const EMAILJS_PUBLIC_KEY = 'WQkA_dBYiZ5PcG1Kg';
+const EMAILJS_SERVICE_ID = 'service_txoqf6p';
+const EMAILJS_TEMPLATE_ID = 'template_s76b1xr';
+
+// Initialize EmailJS
+emailjs.init(EMAILJS_PUBLIC_KEY);
+
 const INITIAL_USERS = [
-  { id: '96714', name: 'K. Tulasidhar', role: 'DGM-I/c', level: 1, password: 'DT@123', requiresPasswordChange: true },
-  { id: 'C8642', name: 'Sudhanshu Ranjan', role: 'Deputy Manager', level: 2, password: 'DT@123', requiresPasswordChange: true },
-  { id: 'D1668', name: 'Rachit Bundiwal', role: 'Assistant Manager', level: 3, password: 'DT@123', requiresPasswordChange: true }
+  { id: '96714', name: 'K. Tulasidhar', role: 'DGM-I/c', level: 1, password: 'DT@123', requiresPasswordChange: true, email: 'tulasidhar@meconlimited.co.in' },
+  { id: 'C8642', name: 'Sudhanshu Ranjan', role: 'Deputy Manager', level: 2, password: 'DT@123', requiresPasswordChange: true, email: 'sudhanshu@meconlimited.co.in' },
+  { id: 'D1668', name: 'Rachit Bundiwal', role: 'Assistant Manager', level: 3, password: 'DT@123', requiresPasswordChange: true, email: 'rachit@meconlimited.co.in' }
 ];
 
 // Simple SVG Icons
@@ -17,44 +25,65 @@ const Icons = {
 };
 
 function App() {
-  const [users, setUsers] = useState(() => {
-    const saved = localStorage.getItem('dt_users');
-    if (saved) {
-      let parsed = JSON.parse(saved);
-      return parsed.map(u => {
-        const initialConfig = INITIAL_USERS.find(iu => iu.id === u.id);
-        return initialConfig ? { ...u, role: initialConfig.role } : u;
-      });
-    }
-    return INITIAL_USERS;
-  });
-
-  const [tasks, setTasks] = useState(() => {
-    const saved = localStorage.getItem('dt_tasks');
-    return saved ? JSON.parse(saved) : [];
-  });
+  const [users, setUsers] = useState([]);
+  const [tasks, setTasks] = useState([]);
 
   const [currentUser, setCurrentUser] = useState(() => {
     const saved = sessionStorage.getItem('dt_current_user');
     return saved ? JSON.parse(saved) : null;
   });
 
-  const [view, setView] = useState('login'); // login, changePassword, forcePasswordChange, dashboard
+  const [view, setView] = useState('login');
   const [loginId, setLoginId] = useState('');
   const [loginPw, setLoginPw] = useState('');
   const [authError, setAuthError] = useState('');
 
-  // Password Change state
   const [changeOldPw, setChangeOldPw] = useState('');
   const [changeNewPw, setChangeNewPw] = useState('');
+  const [changeConfirmPw, setChangeConfirmPw] = useState('');
 
-  useEffect(() => {
-    localStorage.setItem('dt_users', JSON.stringify(users));
-  }, [users]);
+  // OTP Forgot Password state
+  const [forgotStep, setForgotStep] = useState(1); // 1=select user, 2=enter OTP, 3=set new password
+  const [otpValue, setOtpValue] = useState('');
+  const [otpSending, setOtpSending] = useState(false);
+  const [otpTimer, setOtpTimer] = useState(0);
+  const [otpSuccess, setOtpSuccess] = useState('');
 
+  // Firebase Realtime Subscriptions
   useEffect(() => {
-    localStorage.setItem('dt_tasks', JSON.stringify(tasks));
-  }, [tasks]);
+    const unsubscribeUsers = db.collection('dt_users').onSnapshot(snap => {
+      if (snap.empty) {
+        INITIAL_USERS.forEach(u => {
+          db.collection('dt_users').doc(u.id).set(u);
+        });
+      } else {
+        const uList = [];
+        snap.forEach(doc => uList.push(doc.data()));
+        setUsers(uList);
+
+        // One-time migration: patch missing email fields into existing users
+        uList.forEach(u => {
+          if (!u.email) {
+            const initial = INITIAL_USERS.find(iu => iu.id === u.id);
+            if (initial && initial.email) {
+              db.collection('dt_users').doc(u.id).update({ email: initial.email });
+            }
+          }
+        });
+      }
+    });
+
+    const unsubscribeTasks = db.collection('dt_tasks').onSnapshot(snap => {
+      const tList = [];
+      snap.forEach(doc => tList.push({ ...doc.data(), id: doc.id }));
+      setTasks(tList);
+    });
+
+    return () => {
+      unsubscribeUsers();
+      unsubscribeTasks();
+    };
+  }, []);
 
   useEffect(() => {
     if (currentUser) {
@@ -70,48 +99,238 @@ function App() {
     }
   }, [currentUser]);
 
+  useEffect(() => {
+    const handlePageShow = (e) => {
+      if (e.persisted) {
+        const saved = sessionStorage.getItem('dt_current_user');
+        if (!saved) {
+          setCurrentUser(null);
+          setView('login');
+        }
+      }
+    };
+    window.addEventListener('pageshow', handlePageShow);
+    return () => window.removeEventListener('pageshow', handlePageShow);
+  }, []);
+
+  // OTP countdown timer
+  useEffect(() => {
+    if (otpTimer <= 0) return;
+    const interval = setInterval(() => {
+      setOtpTimer(prev => prev - 1);
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [otpTimer]);
+
+  const generateOTP = () => {
+    return Math.floor(100000 + Math.random() * 900000).toString();
+  };
+
+  const maskEmail = (email) => {
+    if (!email) return '***';
+    const [user, domain] = email.split('@');
+    const masked = user.slice(0, 2) + '***' + user.slice(-1);
+    return masked + '@' + domain;
+  };
+
+  const handleSendOTP = async () => {
+    setAuthError('');
+    setOtpSuccess('');
+    if (!loginId) {
+      setAuthError('Please select a user first');
+      return;
+    }
+    const user = users.find(u => u.id === loginId);
+    if (!user || !user.email) {
+      setAuthError('No email configured for this user. Contact admin.');
+      return;
+    }
+
+    setOtpSending(true);
+    const otp = generateOTP();
+    const expiresAt = Date.now() + 5 * 60 * 1000; // 5 minutes
+
+    try {
+      // Store OTP in Firestore
+      await db.collection('dt_otp').doc(loginId).set({
+        otp: otp,
+        expiresAt: expiresAt,
+        attempts: 0
+      });
+
+      // Send OTP via EmailJS
+      await emailjs.send(EMAILJS_SERVICE_ID, EMAILJS_TEMPLATE_ID, {
+        to_name: user.name,
+        to_email: user.email,
+        otp_code: otp,
+        app_name: 'DT To-Do System'
+      });
+
+      setOtpSending(false);
+      setOtpTimer(120); // 2-minute resend cooldown
+      setForgotStep(2);
+      setOtpSuccess('OTP sent to ' + maskEmail(user.email));
+    } catch (err) {
+      setOtpSending(false);
+      console.error('OTP send error:', err);
+      setAuthError('Failed to send OTP. Please check EmailJS configuration or try again.');
+    }
+  };
+
+  const handleVerifyOTP = async () => {
+    setAuthError('');
+    setOtpSuccess('');
+    if (otpValue.length !== 6) {
+      setAuthError('Please enter the 6-digit OTP');
+      return;
+    }
+
+    try {
+      const otpDoc = await db.collection('dt_otp').doc(loginId).get();
+      if (!otpDoc.exists) {
+        setAuthError('OTP expired or not found. Please request a new one.');
+        return;
+      }
+
+      const otpData = otpDoc.data();
+
+      if (otpData.attempts >= 5) {
+        setAuthError('Too many failed attempts. Please request a new OTP.');
+        await db.collection('dt_otp').doc(loginId).delete();
+        return;
+      }
+
+      if (Date.now() > otpData.expiresAt) {
+        setAuthError('OTP has expired. Please request a new one.');
+        await db.collection('dt_otp').doc(loginId).delete();
+        return;
+      }
+
+      if (otpData.otp !== otpValue) {
+        await db.collection('dt_otp').doc(loginId).update({
+          attempts: otpData.attempts + 1
+        });
+        setAuthError('Incorrect OTP. ' + (4 - otpData.attempts) + ' attempts remaining.');
+        return;
+      }
+
+      // OTP verified — move to set new password step
+      await db.collection('dt_otp').doc(loginId).delete();
+      setForgotStep(3);
+      setOtpSuccess('OTP verified successfully! Set your new password.');
+    } catch (err) {
+      console.error('OTP verify error:', err);
+      setAuthError('Verification failed. Please try again.');
+    }
+  };
+
+  const handleResetPasswordWithOTP = async (e) => {
+    e.preventDefault();
+    setAuthError('');
+    setOtpSuccess('');
+
+    if (changeNewPw.length < 4) {
+      setAuthError('Password must be at least 4 characters');
+      return;
+    }
+    if (changeNewPw !== changeConfirmPw) {
+      setAuthError('New passwords do not match');
+      return;
+    }
+
+    try {
+      await db.collection('dt_users').doc(loginId).update({
+        password: changeNewPw,
+        requiresPasswordChange: false
+      });
+
+      setAuthError('');
+      setOtpSuccess('Password reset successfully! Please login.');
+      setTimeout(() => {
+        setView('login');
+        setForgotStep(1);
+        setChangeNewPw(''); setChangeConfirmPw('');
+        setOtpValue(''); setOtpSuccess(''); setLoginId('');
+      }, 2000);
+    } catch (err) {
+      console.error('Password reset error:', err);
+      setAuthError('Failed to reset password. Please try again.');
+    }
+  };
+
+  const resetForgotFlow = () => {
+    setView('login');
+    setForgotStep(1);
+    setOtpValue('');
+    setOtpSending(false);
+    setOtpTimer(0);
+    setAuthError('');
+    setOtpSuccess('');
+    setChangeNewPw('');
+    setChangeConfirmPw('');
+    setLoginId('');
+  };
+
   const handleLogin = (e) => {
     e.preventDefault();
     setAuthError('');
+    if (users.length === 0) {
+      setAuthError('Database connecting... Please wait 2 seconds.');
+      return;
+    }
     const user = users.find(u => u.id === loginId && u.password === loginPw);
     if (user) {
       setCurrentUser(user);
     } else {
-      setAuthError('Invalid Employee ID or Password');
+      setAuthError('Invalid Employee Selection or Password');
     }
   };
 
-  const handlePasswordChange = (e, isForce = false) => {
+  const handlePasswordChange = async (e, isForce = false) => {
     e.preventDefault();
     setAuthError('');
+    if (changeNewPw !== changeConfirmPw) {
+      setAuthError('New passwords do not match'); return;
+    }
+
     if (isForce) {
-       // user is logged in, old pw is their current pw
        if (changeNewPw.length < 4) {
          setAuthError('Password must be at least 4 characters'); return;
        }
-       const updatedUsers = users.map(u => u.id === currentUser.id ? { ...u, password: changeNewPw, requiresPasswordChange: false } : u);
-       setUsers(updatedUsers);
-       const updatedUser = updatedUsers.find(u => u.id === currentUser.id);
+       await db.collection('dt_users').doc(currentUser.id).update({
+         password: changeNewPw,
+         requiresPasswordChange: false
+       });
+
+       const updatedUser = { ...currentUser, password: changeNewPw, requiresPasswordChange: false };
        setCurrentUser(updatedUser);
-       setChangeNewPw('');
+       setChangeNewPw(''); setChangeConfirmPw('');
     } else {
-       // change password from login screen
        const user = users.find(u => u.id === loginId && u.password === changeOldPw);
        if (!user) {
-         setAuthError('Incorrect ID or Current Password'); return;
+         setAuthError('Incorrect User or Current Password'); return;
        }
        if (changeNewPw.length < 4) {
          setAuthError('Password must be at least 4 characters'); return;
        }
-       const updatedUsers = users.map(u => u.id === loginId ? { ...u, password: changeNewPw, requiresPasswordChange: false } : u);
-       setUsers(updatedUsers);
+
+       await db.collection('dt_users').doc(loginId).update({
+         password: changeNewPw,
+         requiresPasswordChange: false
+       });
+
        setAuthError('Password updated successfully! Please login.');
        setView('login');
-       setChangeOldPw(''); setChangeNewPw(''); setLoginPw('');
+       setChangeOldPw(''); setChangeNewPw(''); setChangeConfirmPw(''); setLoginPw(''); setLoginId('');
     }
   };
 
-  const logout = () => setCurrentUser(null);
+  const logout = () => {
+    setCurrentUser(null);
+    setLoginId('');
+    setLoginPw('');
+    setView('login');
+  };
 
   if (!currentUser && view === 'login') {
     return (
@@ -119,7 +338,7 @@ function App() {
         <div className="glass-panel auth-box">
           <div className="auth-header">
             <h1>DT To-Do System</h1>
-            <p>Enter your credentials to continue</p>
+            <p>Select your name to login</p>
           </div>
           {authError && <div className="alert-warning">{authError}</div>}
           <form onSubmit={handleLogin} style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
@@ -136,8 +355,114 @@ function App() {
             </div>
             <button type="submit" className="btn-primary">Login</button>
           </form>
+          <div style={{ textAlign: 'center', marginTop: '1rem', display: 'flex', gap: '1rem', justifyContent: 'center' }}>
+            <button className="btn-logout" onClick={() => { setView('forgotPassword'); setAuthError(''); setOtpSuccess(''); setForgotStep(1); }}>Forgot Password?</button>
+            <button className="btn-logout" onClick={() => { setView('changePassword'); setAuthError(''); }}>Change Password</button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (!currentUser && view === 'forgotPassword') {
+    return (
+      <div className="auth-container">
+        <div className="glass-panel auth-box">
+          <div className="auth-header">
+            <h1>Reset Password</h1>
+            <p>
+              {forgotStep === 1 && 'Select your account to receive an OTP'}
+              {forgotStep === 2 && 'Enter the 6-digit code sent to your email'}
+              {forgotStep === 3 && 'Set your new password'}
+            </p>
+          </div>
+
+          {/* Step indicators */}
+          <div className="otp-steps">
+            <div className={`otp-step ${forgotStep >= 1 ? 'active' : ''}`}><span>1</span> Verify Identity</div>
+            <div className={`otp-step ${forgotStep >= 2 ? 'active' : ''}`}><span>2</span> Enter OTP</div>
+            <div className={`otp-step ${forgotStep >= 3 ? 'active' : ''}`}><span>3</span> New Password</div>
+          </div>
+
+          {authError && <div className="alert-warning">{authError}</div>}
+          {otpSuccess && <div className="alert-success">{otpSuccess}</div>}
+
+          {/* Step 1: Select user and send OTP */}
+          {forgotStep === 1 && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+              <div className="form-group">
+                <label>Select User</label>
+                <select value={loginId} onChange={e => setLoginId(e.target.value)} required>
+                  <option value="">Select User...</option>
+                  {users.map(u => <option key={u.id} value={u.id}>{u.name} ({u.role})</option>)}
+                </select>
+              </div>
+              {loginId && users.find(u => u.id === loginId)?.email && (
+                <p style={{ fontSize: '0.85rem', color: '#6b7280' }}>
+                  OTP will be sent to: <strong>{maskEmail(users.find(u => u.id === loginId).email)}</strong>
+                </p>
+              )}
+              <button
+                className="btn-primary"
+                onClick={handleSendOTP}
+                disabled={otpSending || !loginId}
+                style={{ opacity: (otpSending || !loginId) ? 0.6 : 1 }}
+              >
+                {otpSending ? 'Sending OTP...' : 'Send OTP'}
+              </button>
+            </div>
+          )}
+
+          {/* Step 2: Enter OTP */}
+          {forgotStep === 2 && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+              <div className="form-group">
+                <label>Enter 6-Digit OTP</label>
+                <input
+                  type="text"
+                  value={otpValue}
+                  onChange={e => {
+                    const val = e.target.value.replace(/\D/g, '').slice(0, 6);
+                    setOtpValue(val);
+                  }}
+                  placeholder="000000"
+                  maxLength="6"
+                  className="otp-input"
+                  autoFocus
+                />
+              </div>
+              <button className="btn-primary" onClick={handleVerifyOTP} disabled={otpValue.length !== 6}>
+                Verify OTP
+              </button>
+              <div style={{ textAlign: 'center', fontSize: '0.85rem', color: '#6b7280' }}>
+                {otpTimer > 0 ? (
+                  <span>Resend OTP in <strong>{Math.floor(otpTimer / 60)}:{String(otpTimer % 60).padStart(2, '0')}</strong></span>
+                ) : (
+                  <button className="btn-logout" onClick={handleSendOTP} disabled={otpSending}>
+                    {otpSending ? 'Sending...' : 'Resend OTP'}
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Step 3: Set new password */}
+          {forgotStep === 3 && (
+            <form onSubmit={handleResetPasswordWithOTP} style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+              <div className="form-group">
+                <label>New Password</label>
+                <input type="password" value={changeNewPw} onChange={e => setChangeNewPw(e.target.value)} required />
+              </div>
+              <div className="form-group">
+                <label>Confirm New Password</label>
+                <input type="password" value={changeConfirmPw} onChange={e => setChangeConfirmPw(e.target.value)} required />
+              </div>
+              <button type="submit" className="btn-primary">Reset Password</button>
+            </form>
+          )}
+
           <div style={{ textAlign: 'center', marginTop: '1rem' }}>
-            <button className="btn-logout" onClick={() => { setView('changePassword'); setAuthError(''); }}>Forgot / Change Password?</button>
+            <button className="btn-logout" onClick={resetForgotFlow}>Back to Login</button>
           </div>
         </div>
       </div>
@@ -169,6 +494,10 @@ function App() {
               <label>New Password</label>
               <input type="password" value={changeNewPw} onChange={e => setChangeNewPw(e.target.value)} required />
             </div>
+             <div className="form-group">
+              <label>Confirm New Password</label>
+              <input type="password" value={changeConfirmPw} onChange={e => setChangeConfirmPw(e.target.value)} required />
+            </div>
             <button type="submit" className="btn-primary">Update Password</button>
           </form>
           <div style={{ textAlign: 'center', marginTop: '1rem' }}>
@@ -193,6 +522,10 @@ function App() {
               <label>New Password</label>
               <input type="password" value={changeNewPw} onChange={e => setChangeNewPw(e.target.value)} required />
             </div>
+             <div className="form-group">
+              <label>Confirm New Password</label>
+              <input type="password" value={changeConfirmPw} onChange={e => setChangeConfirmPw(e.target.value)} required />
+            </div>
             <button type="submit" className="btn-primary">Set Password & Continue</button>
           </form>
         </div>
@@ -200,14 +533,30 @@ function App() {
     );
   }
 
-  return <Dashboard currentUser={currentUser} users={users} tasks={tasks} setTasks={setTasks} logout={logout} />;
+  return <Dashboard currentUser={currentUser} users={users} tasks={tasks} logout={logout} />;
 }
 
-function Dashboard({ currentUser, users, tasks, setTasks, logout }) {
+function Dashboard({ currentUser, users, tasks, logout }) {
   const [activeTab, setActiveTab] = useState('All tasks');
-  const [deleteModalContent, setDeleteModalContent] = useState(null); // { taskId } 
+  const [deleteModalContent, setDeleteModalContent] = useState(null);
+  const [editingTaskId, setEditingTaskId] = useState(null);
 
-  // New task form state
+  const handleEditClick = (task) => {
+    setEditingTaskId(task.id);
+    setTName(task.name);
+    setTDesc(task.desc);
+    setTAssignee(task.assignedToId);
+    setTDate(task.date);
+    setTTime(task.time || '');
+    setTPriority(task.priority || 'Medium');
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  const cancelEdit = () => {
+    setEditingTaskId(null);
+    setTName(''); setTDesc(''); setTAssignee(''); setTDate(''); setTTime(''); setTPriority('Medium');
+  };
+
   const [tName, setTName] = useState('');
   const [tDesc, setTDesc] = useState('');
   const [tAssignee, setTAssignee] = useState('');
@@ -231,56 +580,63 @@ function Dashboard({ currentUser, users, tasks, setTasks, logout }) {
      document.body.removeChild(link);
   };
 
-  const handleCreateTask = (e) => {
+  const handleCreateTask = async (e) => {
     e.preventDefault();
     if (!tName || !tDesc || !tAssignee || !tDate || !tPriority) {
        setFormError('Please fill all inputs except time.');
        return;
     }
     setFormError('');
-    
-    let aUser = users.find(u => u.id === tAssignee);
-    const newTask = {
-      id: Date.now().toString(),
-      name: tName,
-      desc: tDesc,
-      assignedById: currentUser.id,
-      assignedByName: currentUser.name,
-      assignedToId: aUser.id,
-      assignedToName: aUser.name,
-      assignedByLevel: currentUser.level,
-      assignedToLevel: aUser.level,
-      date: tDate,
-      time: tTime,
-      priority: tPriority,
-      status: 'pending', // pending, completed, deleted
-      createdAt: new Date().toISOString(),
-      deletedBy: null
-    };
 
-    setTasks([...tasks, newTask]);
+    let aUser = users.find(u => u.id === tAssignee);
+
+    if (editingTaskId) {
+      await db.collection('dt_tasks').doc(editingTaskId).update({
+        name: tName,
+        desc: tDesc,
+        assignedToId: aUser.id,
+        assignedToName: aUser.name,
+        assignedToLevel: aUser.level,
+        date: tDate,
+        time: tTime,
+        priority: tPriority
+      });
+      setEditingTaskId(null);
+    } else {
+      const newTask = {
+        name: tName,
+        desc: tDesc,
+        assignedById: currentUser.id,
+        assignedByName: currentUser.name,
+        assignedToId: aUser.id,
+        assignedToName: aUser.name,
+        assignedByLevel: currentUser.level,
+        assignedToLevel: aUser.level,
+        date: tDate,
+        time: tTime,
+        priority: tPriority,
+        status: 'pending',
+        createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+        deletedBy: null
+      };
+      await db.collection('dt_tasks').add(newTask);
+    }
     setTName(''); setTDesc(''); setTAssignee(''); setTDate(''); setTTime(''); setTPriority('Medium');
   };
 
-  const handleTaskAction = (taskId, action) => {
-    const updated = tasks.map(t => {
-      if (t.id === taskId) {
-        if (action === 'complete') return { ...t, status: 'completed' };
-        if (action === 'reopen') return { ...t, status: 'pending' };
-      }
-      return t;
-    });
-    setTasks(updated);
+  const handleTaskAction = async (taskId, action) => {
+    if (action === 'complete') {
+      await db.collection('dt_tasks').doc(taskId).update({ status: 'completed' });
+    } else if (action === 'reopen') {
+      await db.collection('dt_tasks').doc(taskId).update({ status: 'pending' });
+    }
   };
 
-  const confirmDelete = (taskId) => {
-    const updated = tasks.map(t => {
-      if (t.id === taskId) {
-        return { ...t, status: 'deleted', deletedBy: currentUser.name };
-      }
-      return t;
+  const confirmDelete = async (taskId) => {
+    await db.collection('dt_tasks').doc(taskId).update({
+      status: 'deleted',
+      deletedBy: currentUser.name
     });
-    setTasks(updated);
     setDeleteModalContent(null);
   };
 
@@ -288,33 +644,28 @@ function Dashboard({ currentUser, users, tasks, setTasks, logout }) {
   const showDeletedTab = isMaster || currentUser.id === 'C8642';
 
   const processedTasks = useMemo(() => {
-    let filtered = tasks;
-    
-    if (activeTab === 'All tasks') filtered = tasks.filter(t => t.status !== 'deleted');
-    else if (activeTab === 'Pending') filtered = tasks.filter(t => t.status === 'pending');
-    else if (activeTab === 'Completed') filtered = tasks.filter(t => t.status === 'completed');
-    else if (activeTab === 'Assigned to me') filtered = tasks.filter(t => t.status !== 'deleted' && t.assignedToId === currentUser.id);
-    else if (activeTab === 'Deleted tasks') filtered = tasks.filter(t => t.status === 'deleted');
+    let filtered = [...tasks];
 
-    // Sorting Logic
+    if (activeTab === 'All tasks') filtered = filtered.filter(t => t.status !== 'deleted');
+    else if (activeTab === 'Pending') filtered = filtered.filter(t => t.status === 'pending');
+    else if (activeTab === 'Completed') filtered = filtered.filter(t => t.status === 'completed');
+    else if (activeTab === 'Assigned to me') filtered = filtered.filter(t => t.status !== 'deleted' && t.assignedToId === currentUser.id);
+    else if (activeTab === 'Deleted tasks') filtered = filtered.filter(t => t.status === 'deleted');
+
     const priorityWeight = { 'High': 3, 'Medium': 2, 'Low': 1 };
     const todayStr = new Date().toISOString().split('T')[0];
 
     filtered.sort((a, b) => {
-      // Overdue first (only if pending)
       const aIsOverdue = a.status === 'pending' && a.date < todayStr;
       const bIsOverdue = b.status === 'pending' && b.date < todayStr;
-      
+
       if (aIsOverdue && !bIsOverdue) return -1;
       if (!aIsOverdue && bIsOverdue) return 1;
 
-      // Primary sort by Date
       if (a.date !== b.date) {
         return a.date.localeCompare(b.date);
       }
-
-      // Secondary sort by Priority
-      return priorityWeight[b.priority] - priorityWeight[a.priority];
+      return priorityWeight[b.priority] - (priorityWeight[a.priority] || 0);
     });
 
     return filtered;
@@ -388,7 +739,7 @@ function Dashboard({ currentUser, users, tasks, setTasks, logout }) {
                 const canEditDelete = isMaster || task.assignedById === currentUser.id;
 
                 return (
-                  <div key={task.id} className={`glass-panel task-card priority-${task.priority.toLowerCase()} ${isOverdue ? 'overdue' : ''} status-${task.status}`}>
+                  <div key={task.id} className={`glass-panel task-card priority-${task.priority?.toLowerCase() || 'medium'} ${isOverdue ? 'overdue' : ''} status-${task.status}`}>
                      <div className="task-header">
                        <h4 className="task-title">{task.name}</h4>
                        <div className="task-badges">
@@ -398,7 +749,7 @@ function Dashboard({ currentUser, users, tasks, setTasks, logout }) {
                        </div>
                      </div>
                      <p className="task-desc">{task.desc}</p>
-                     
+
                      <div className="task-meta">
                        <span><strong>From:</strong> {task.assignedByName}</span>
                        <span><strong>To:</strong> {task.assignedToName}</span>
@@ -414,10 +765,10 @@ function Dashboard({ currentUser, users, tasks, setTasks, logout }) {
                           ) : (
                             <button onClick={() => handleTaskAction(task.id, 'reopen')} className="btn-secondary" style={{padding: '0.25rem 0.75rem', fontSize:'0.8rem'}}>Reopen</button>
                           )}
-                          
+
                           {canEditDelete && (
                             <>
-                              <button className="icon-btn" title="Edit"><Icons.Edit /></button>
+                              <button onClick={() => handleEditClick(task)} className="icon-btn" title="Edit"><Icons.Edit /></button>
                               <button onClick={() => setDeleteModalContent({id: task.id, name: task.name})} className="icon-btn danger" title="Delete"><Icons.Trash /></button>
                             </>
                           )}
@@ -431,7 +782,7 @@ function Dashboard({ currentUser, users, tasks, setTasks, logout }) {
 
         <div className="sidebar">
           <div className="glass-panel task-form-panel">
-            <h3>Create Directive</h3>
+            <h3>{editingTaskId ? 'Edit Directive' : 'Create Directive'}</h3>
             {formError && <div className="alert-warning">{formError}</div>}
             <form onSubmit={handleCreateTask} style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
                <div className="form-group">
@@ -467,7 +818,14 @@ function Dashboard({ currentUser, users, tasks, setTasks, logout }) {
                    <option value="Low">Low</option>
                  </select>
                </div>
-               <button type="submit" className="btn-primary" style={{marginTop: '0.5rem'}}>Add Directive</button>
+               <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.5rem' }}>
+                 <button type="submit" className="btn-primary" style={{flex: 1}}>
+                   {editingTaskId ? 'Update Directive' : 'Add Directive'}
+                 </button>
+                 {editingTaskId && (
+                   <button type="button" onClick={cancelEdit} className="btn-secondary">Cancel</button>
+                 )}
+               </div>
             </form>
           </div>
         </div>
