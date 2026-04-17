@@ -672,7 +672,7 @@ function Dashboard({ currentUser, users, tasks, logout }) {
   }, [tasks, activeTab, currentUser.id]);
 
   const stats = {
-    all: tasks.filter(t => t.status !== 'deleted').length,
+    all: tasks.filter(t => t.status !== 'deleted' && t.status !== 'completed').length,
     pending: tasks.filter(t => t.status === 'pending').length,
     completed: tasks.filter(t => t.status === 'completed').length
   };

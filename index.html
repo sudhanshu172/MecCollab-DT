@@ -589,6 +589,8 @@ function Dashboard({ currentUser, users, tasks, logout }) {
   const [activeTab, setActiveTab] = useState('All tasks');
   const [deleteModalContent, setDeleteModalContent] = useState(null); 
   const [editingTaskId, setEditingTaskId] = useState(null);
+  const [completionDateModal, setCompletionDateModal] = useState(null);
+  const [completionDate, setCompletionDate] = useState('');
 
   const handleEditClick = (task) => {
     setEditingTaskId(task.id);
@@ -614,10 +616,29 @@ function Dashboard({ currentUser, users, tasks, logout }) {
   const [tPriority, setTPriority] = useState('Medium');
   const [formError, setFormError] = useState('');
 
+  // Auto-update task status based on date
+  useEffect(() => {
+    const todayStr = new Date().toISOString().split('T')[0];
+    
+    tasks.forEach(async (task) => {
+      if (task.status === 'pending' && task.date) {
+        if (task.date < todayStr) {
+          // Task date is in the past, update to overdue
+          await db.collection('dt_tasks').doc(task.id).update({ status: 'overdue' });
+        }
+      } else if (task.status === 'overdue' && task.date) {
+        if (task.date >= todayStr) {
+          // Task date is no longer in the past, revert to pending
+          await db.collection('dt_tasks').doc(task.id).update({ status: 'pending' });
+        }
+      }
+    });
+  }, [tasks]);
+
   const handleExportCSV = () => {
-     let csvContent = "data:text/csv;charset=utf-8,ID,Title,Description,Assigned From,Assigned To,Date,Time,Priority,Status\n";
+     let csvContent = "data:text/csv;charset=utf-8,Title,Description,Assigned From,Assigned To,Date,Time,Priority,Status\n";
      tasks.forEach(t => {
-       const row = [t.id, t.name, t.desc, t.assignedByName, t.assignedToName, t.date, t.time || 'N/A', t.priority, t.status];
+       const row = [t.name, t.desc, t.assignedByName, t.assignedToName, t.date, t.time || 'N/A', t.priority, t.status];
        csvContent += row.map(v => `"${v}"`).join(",") + "\n";
      });
      const encodedUri = encodeURI(csvContent);
@@ -638,6 +659,8 @@ function Dashboard({ currentUser, users, tasks, logout }) {
     setFormError('');
     
     let aUser = users.find(u => u.id === tAssignee);
+    const todayStr = new Date().toISOString().split('T')[0];
+    const initialStatus = tDate < todayStr ? 'overdue' : 'pending';
     
     if (editingTaskId) {
       await db.collection('dt_tasks').doc(editingTaskId).update({
@@ -664,7 +687,7 @@ function Dashboard({ currentUser, users, tasks, logout }) {
         date: tDate,
         time: tTime,
         priority: tPriority,
-        status: 'pending', 
+        status: initialStatus, 
         createdAt: firebase.firestore.FieldValue.serverTimestamp(),
         deletedBy: null
       };
@@ -689,31 +712,57 @@ function Dashboard({ currentUser, users, tasks, logout }) {
     setDeleteModalContent(null);
   };
 
+  const openCompletionDateModal = (task) => {
+    const todayStr = new Date().toISOString().split('T')[0];
+    setCompletionDateModal(task);
+    setCompletionDate(todayStr);
+  };
+
+  const handleMarkCompletedWithDate = async () => {
+    if (!completionDateModal || !completionDate) {
+      alert('Please select a completion date');
+      return;
+    }
+
+    if (completionDate < completionDateModal.date) {
+      alert(`Completion date must be on or after the task date (${completionDateModal.date})`);
+      return;
+    }
+
+    await db.collection('dt_tasks').doc(completionDateModal.id).update({ 
+      status: 'completed',
+      completedOn: completionDate
+    });
+
+    setCompletionDateModal(null);
+    setCompletionDate('');
+  };
+
   const isMaster = currentUser.id === '96714';
   const showDeletedTab = isMaster || currentUser.id === 'C8642';
 
   const processedTasks = useMemo(() => {
     let filtered = [...tasks];
     
-    if (activeTab === 'All tasks') filtered = filtered.filter(t => t.status !== 'deleted');
+    if (activeTab === 'All tasks') filtered = filtered.filter(t => t.status !== 'deleted' && t.status !== 'completed');
+    else if (activeTab === 'Overdue') filtered = filtered.filter(t => t.status === 'overdue')
     else if (activeTab === 'Pending') filtered = filtered.filter(t => t.status === 'pending');
     else if (activeTab === 'Completed') filtered = filtered.filter(t => t.status === 'completed');
-    else if (activeTab === 'Assigned to me') filtered = filtered.filter(t => t.status !== 'deleted' && t.assignedToId === currentUser.id);
+    else if (activeTab === 'Assigned to me') filtered = filtered.filter(t => t.status !== 'deleted' && t.status !== 'completed' && t.assignedToId === currentUser.id);
     else if (activeTab === 'Deleted tasks') filtered = filtered.filter(t => t.status === 'deleted');
 
     const priorityWeight = { 'High': 3, 'Medium': 2, 'Low': 1 };
-    const todayStr = new Date().toISOString().split('T')[0];
 
     filtered.sort((a, b) => {
-      const aIsOverdue = a.status === 'pending' && a.date < todayStr;
-      const bIsOverdue = b.status === 'pending' && b.date < todayStr;
+      // Prioritize overdue tasks first
+      if (a.status === 'overdue' && b.status !== 'overdue') return -1;
+      if (a.status !== 'overdue' && b.status === 'overdue') return 1;
       
-      if (aIsOverdue && !bIsOverdue) return -1;
-      if (!aIsOverdue && bIsOverdue) return 1;
-
+      // Then sort by date
       if (a.date !== b.date) {
         return a.date.localeCompare(b.date);
       }
+      // Finally sort by priority
       return priorityWeight[b.priority] - (priorityWeight[a.priority] || 0);
     });
 
@@ -721,8 +770,9 @@ function Dashboard({ currentUser, users, tasks, logout }) {
   }, [tasks, activeTab, currentUser.id]);
 
   const stats = {
-    all: tasks.filter(t => t.status !== 'deleted').length,
+    all: tasks.filter(t => t.status !== 'deleted' && t.status !== 'completed').length,
     pending: tasks.filter(t => t.status === 'pending').length,
+    overdue: tasks.filter(t => t.status === 'overdue').length,
     completed: tasks.filter(t => t.status === 'completed').length
   };
 
@@ -734,6 +784,10 @@ function Dashboard({ currentUser, users, tasks, logout }) {
         </div>
         <div className="header-actions">
            {currentUser.id === 'C8642' && (
+              <button className="btn-success" onClick={handleExportCSV} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                <Icons.Download /> Export Data
+              </button>
+           )} {currentUser.id === '96714' && (
               <button className="btn-success" onClick={handleExportCSV} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                 <Icons.Download /> Export Data
               </button>
@@ -761,6 +815,10 @@ function Dashboard({ currentUser, users, tasks, logout }) {
           <span className="stat-value" style={{color: '#f97316'}}>{stats.pending}</span>
         </div>
         <div className="glass-panel stat-card">
+          <span className="stat-label">Overdue</span>
+          <span className="stat-value" style={{color: '#f97316'}}>{stats.overdue}</span>
+        </div>
+        <div className="glass-panel stat-card">
           <span className="stat-label">Completed</span>
           <span className="stat-value" style={{color: '#10b981'}}>{stats.completed}</span>
         </div>
@@ -769,7 +827,7 @@ function Dashboard({ currentUser, users, tasks, logout }) {
       <div className="main-content">
         <div className="task-feed">
            <div className="tabs">
-             {['All tasks', 'Pending', 'Completed', 'Assigned to me'].map(t => (
+             {['All tasks', 'Pending', 'Overdue', 'Completed', 'Assigned to me'].map(t => (
                <button key={t} className={`tab-btn ${activeTab === t ? 'active' : ''}`} onClick={() => setActiveTab(t)}>{t}</button>
              ))}
              {showDeletedTab && (
@@ -783,7 +841,7 @@ function Dashboard({ currentUser, users, tasks, logout }) {
                  No tasks found in this category.
                </div>
              ) : processedTasks.map(task => {
-                const isOverdue = task.status === 'pending' && task.date < new Date().toISOString().split('T')[0];
+                const isOverdue = task.status === 'overdue';
                 const badgeType = task.assignedByLevel <= task.assignedToLevel ? 'Assign' : 'Request';
                 const canEditDelete = isMaster || task.assignedById === currentUser.id;
 
@@ -811,6 +869,8 @@ function Dashboard({ currentUser, users, tasks, logout }) {
                        <div className="task-actions">
                           {task.status === 'pending' ? (
                             <button onClick={() => handleTaskAction(task.id, 'complete')} className="icon-btn success" title="Mark Completed"><Icons.Check /></button>
+                          ) : task.status === 'overdue' ? (
+                            <button onClick={() => openCompletionDateModal(task)} className="btn-primary" style={{padding: '0.25rem 0.75rem', fontSize:'0.8rem'}}>Completed on</button>
                           ) : (
                             <button onClick={() => handleTaskAction(task.id, 'reopen')} className="btn-secondary" style={{padding: '0.25rem 0.75rem', fontSize:'0.8rem'}}>Reopen</button>
                           )}
@@ -888,6 +948,31 @@ function Dashboard({ currentUser, users, tasks, logout }) {
              <div className="modal-actions">
                <button onClick={() => setDeleteModalContent(null)} className="btn-secondary">Cancel</button>
                <button onClick={() => confirmDelete(deleteModalContent.id)} className="btn-primary" style={{background: '#ef4444'}}>Yes, Delete</button>
+             </div>
+          </div>
+        </div>
+      )}
+
+      {completionDateModal && (
+        <div className="modal-overlay">
+          <div className="glass-panel modal-content">
+             <h3 className="modal-title">Mark Task as Completed</h3>
+             <p className="modal-body">Select the date when this task was completed.</p>
+             <p style={{ fontSize: '0.9rem', color: '#6b7280', marginBottom: '1rem' }}>
+               Task due date: <strong>{completionDateModal.date}</strong> — Completion date must be on or after this date.
+             </p>
+             <div className="form-group">
+               <label>Completion Date *</label>
+               <input 
+                 type="date" 
+                 value={completionDate} 
+                 onChange={e => setCompletionDate(e.target.value)}
+                 min={completionDateModal.date}
+               />
+             </div>
+             <div className="modal-actions">
+               <button onClick={() => { setCompletionDateModal(null); setCompletionDate(''); }} className="btn-secondary">Cancel</button>
+               <button onClick={handleMarkCompletedWithDate} className="btn-primary" style={{background: '#10b981'}}>Confirm Completion</button>
              </div>
           </div>
         </div>
