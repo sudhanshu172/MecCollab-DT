@@ -712,6 +712,10 @@ function Dashboard({ currentUser, users, tasks, logout }) {
           <span className="stat-value" style={{color: '#f97316'}}>{stats.pending}</span>
         </div>
         <div className="glass-panel stat-card">
+          <span className="stat-label">Overdue</span>
+          <span className="stat-value" style={{color: '#ef4444'}}>{stats.overdue}</span>
+        </div>
+        <div className="glass-panel stat-card">
           <span className="stat-label">Completed</span>
           <span className="stat-value" style={{color: '#10b981'}}>{stats.completed}</span>
         </div>
